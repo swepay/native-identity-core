@@ -5,7 +5,7 @@ status: draft
 workload: support-library
 owner: "@swepay/support-library"
 created: 2026-09-18
-updated: 2026-09-18
+updated: 2026-09-19
 affects_repos: [native-biometrics-backend, native-kyc-backend]
 libraries: []
 global_standards: [GS-02, GS-05, GS-07, GS-09, GS-13]
@@ -50,8 +50,12 @@ antes deles para que ambos partam consumindo o mesmo contrato desde o primeiro c
   criar/ler/remover — isso é responsabilidade operacional do serviço consumidor.
 - Não persiste imagem em nenhum momento (nem em disco, nem em S3, nem em banco) — quem decide se
   e onde armazenar uma imagem de referência é o chamador.
-- Não implementa verificação de assertion (`IAssertionSigner` só assina); um `IAssertionVerifier`
-  fica para uma spec futura quando houver uma relying party concreta.
+- ~~Não implementa verificação de assertion~~ — **superado em 0.2.0** (2026-09-19):
+  `IAssertionVerifier`/`JwksAssertionVerifier` chegaram nesta mesma spec (ver §3/§4/§10) assim
+  que duas relying parties concretas (NativeGuard `SPEC-guard-0001` e Passly
+  `SPEC-passkey-0002`) confirmaram, de forma independente, o mesmo gap (sem `iss`/`aud` na
+  asserção). O verifier não é consumido por elas nesta mudança — ADR-0003 já as levou a manter
+  cópias próprias do contrato JWS; fica disponível para quem nascer depois preferindo a lib.
 
 ## 3. Design Proposto · dono: `architect`
 
@@ -65,7 +69,9 @@ Native.IdentityCore
 ├── FaceIndex/   IFaceIndex → RekognitionFaceIndex (IAmazonRekognition) + FaceCollectionNaming
 ├── Policy/      BiometricPolicy + BiometricDecision (puro, sem AWS SDK na assinatura)
 ├── Assertions/  BiometricAssertion + IAssertionSigner → KmsAssertionSigner (IAmazonKeyManagementService)
+│               + [0.2.0] IAssertionVerifier → JwksAssertionVerifier (HttpClient, sem AWS)
 └── Serialization/ IdentityCoreJsonSerializerContext (source-gen, único ponto de JSON da lib)
+                  + [0.2.0] AudienceJsonConverter (claim `aud`: string única ou array, RFC 7519 §4.1.3)
 ```
 
 **Alternativas descartadas:**
@@ -77,9 +83,11 @@ Native.IdentityCore
   `Verified`/`Rejected`).* Descartado porque o limiar de decisão é por tenant/produto e pode
   mudar sem qualquer alteração no código de acesso ao Rekognition — acoplar os dois obrigaria
   reimplantar a lib inteira para um ajuste de política.
-- *Verificação de assertion (`IAssertionVerifier`) nesta mesma spec.* Descartado por escopo — não
-  há ainda uma relying party concreta para validar o formato real esperado; entra em spec própria
-  quando `native-biometrics-backend`/`native-kyc-backend` tiverem consumidor definido.
+- *Verificação de assertion (`IAssertionVerifier`) nesta mesma spec.* Descartado inicialmente por
+  escopo (0.1.0) — **revertido em 0.2.0**: duas relying parties concretas já existiam
+  (`native-guard-backend`, `native-passkey-backend`), cada uma com sua própria cópia do
+  verificador e do mesmo pedido de `iss`/`aud`; adicionar `IAssertionVerifier` nesta spec (em vez
+  de uma spec nova) evita descrever o mesmo contrato JWS duas vezes.
 
 Esta lib não depende do shared kernel de aplicação (`NativeMediator`/`NativeLambdaRouter`/
 `Native.FluentValidation`) — `ECOSYSTEM_LIBRARIES.md` já prevê essa isenção para bibliotecas
@@ -101,10 +109,23 @@ namespace). Pontos centrais do contrato:
 - `BiometricDecision.Evaluate(policy, livenessConfidence, faceSimilarity, faceMatchFound, attemptNumber)`
   → `BiometricDecisionResult` (puro).
 - `IAssertionSigner.SignAsync(BiometricAssertion, ct)` → `string` (JWS compacto).
+- **[0.2.0]** `BiometricAssertion` ganha `Issuer` (`iss`) e `Audience` (`aud`, opcional —
+  default `[TenantId]` quando ausente/vazio no momento da assinatura) e `CorrelationId` foi
+  renomeado para `Jti` (mesmo claim de fio `jti`, sem mudança de wire format).
+  `KmsAssertionSignerOptions` ganha `Issuer` (obrigatório, validado como URI absoluta na
+  construção do `KmsAssertionSigner` — nunca um domínio fixo no código; vem de configuração do
+  serviço consumidor). O assinante, não o chamador, é quem grava `iss` no payload.
+- **[0.2.0]** `IAssertionVerifier.VerifyAsync(AssertionVerifierOptions, assertionJws, now, ct)` →
+  `AssertionVerificationResult` — verifica JWKS/ES256, `iss`/`aud`/`purpose`/`decision`/
+  `exp`/`iat` (com `ClockSkew`/`MaxAssertionAge`) e devolve o `BiometricAssertion` assinado
+  (incluindo `Jti`, para o chamador implementar seu próprio guard de replay).
 
-**Breaking changes:** N/A (release inicial `0.1.0`). A partir de `1.0.0`, qualquer alteração nas
-assinaturas acima passa a exigir major + `PublicAPI.Shipped.txt` (a introduzir em `1.0.0`) +
-seção "Breaking Changes" no `CHANGELOG.md`.
+**Breaking changes:**
+- `0.1.0` → `0.2.0`: `BiometricAssertion.CorrelationId` renomeado para `Jti`;
+  `KmsAssertionSignerOptions` ganhou um terceiro parâmetro obrigatório (`Issuer`). Ambas
+  documentadas no `CHANGELOG.md`. Biblioteca ainda pré-1.0 — a partir de `1.0.0`, qualquer
+  alteração nas assinaturas passa a exigir major + `PublicAPI.Shipped.txt` (a introduzir em
+  `1.0.0`) + seção "Breaking Changes" no `CHANGELOG.md`.
 
 ## 5. Modelo de Dados · dono: `developer`
 
@@ -115,6 +136,18 @@ limite de 255 caracteres (limite nativo do Rekognition). Ver `FaceCollectionNami
 
 ## 6. Segurança & Compliance · dono: `security`
 
+- **`iss`/`aud` (0.2.0):** `KmsAssertionSignerOptions.Issuer` é obrigatório e validado como URI
+  absoluta na construção do signer — nunca um domínio fixo no código-fonte desta lib; é sempre
+  configuração do serviço consumidor (variável de ambiente/CloudFormation por ambiente). O
+  assinante ignora um `BiometricAssertion.Issuer` porventura preenchido pelo chamador — `iss` só
+  pode vir da configuração do signer, nunca de um valor arbitrário do código de aplicação
+  (evita "issuer confusion" se o chamador for comprometido ou tiver um bug). `aud` segue o
+  default `[TenantId]` quando o chamador não fornece um valor explícito — quem quiser uma
+  audiência diferente da própria tenant id (ex.: um id de RP específico) deve passá-la.
+- **Replay não é responsabilidade desta lib (0.2.0):** `JwksAssertionVerifier` expõe `Jti` no
+  `BiometricAssertion` retornado, mas não guarda estado — cabe ao chamador (ex.: um put
+  condicional `attribute_not_exists(PK)` como NativeGuard/Passly já fazem) impedir reuso.
+  Documentado no README para não ser assumido implicitamente.
 - **Tenant (GS-05):** `tenantId` é parâmetro explícito em toda chamada de `ILivenessSessionService`/
   `IFaceIndex`; a coleção Rekognition é resolvida exclusivamente por `FaceCollectionNaming` — não
   existe caminho de código nesta lib que monte um `CollectionId` sem passar pelo tenant do
@@ -152,7 +185,9 @@ trace nem mensagem crua desta lib que deva vazar para uma resposta 5xx sem tradu
 ## 8. Estratégia de Teste · dono: `qa`
 
 xUnit + NSubstitute + Shouldly + Bogus, gate 85% line / 70% branch (`coverlet.runsettings`).
-Cobertura entregue nesta primeira versão: 77 testes, ~93,7% line / ~83,3% branch. Destaques:
+Cobertura entregue na primeira versão: 77 testes, ~93,7% line / ~83,3% branch. Com a mudança
+0.2.0 (`iss`/`aud`/`Jti` + `IAssertionVerifier`): 108 testes, 92,9% line / 82,05% branch.
+Destaques (0.1.0):
 - `BiometricDecision` — matriz completa de cenários (verified, retry, rejected por
   `MaxAttempts`, cada `BiometricRejectionReason` isolado/combinado).
 - `FaceCollectionNaming` — build válido/inválido, limite de 255 caracteres, round-trip `TryParse`.
@@ -162,6 +197,15 @@ Cobertura entregue nesta primeira versão: 77 testes, ~93,7% line / ~83,3% branc
   o campo (erro esperado).
 - `KmsAssertionSigner` — `IAmazonKeyManagementService` mockado; verifica ES256 (conversão
   aplicada) e RS256 (assinatura repassada sem alteração).
+Destaques (0.2.0): `KmsAssertionSigner`/`BiometricAssertion` — emissão de `iss`/`aud`/`sub`/`jti`,
+default de audiência (`[TenantId]`) vs. audiência explícita, `Issuer` inválido (não-URI-absoluta)
+rejeitado na construção sem chamar KMS. `JwksAssertionVerifier` — par de chaves ES256 em memória +
+`HttpMessageHandler` fake (nenhuma rede real): caminho feliz, assinatura inválida (payload
+adulterado), `kid` desconhecido (com refresh forçado), `iss` divergente, `aud` fora da lista
+esperada (string única e array), `purpose` divergente, `decision` não `Verified` (`Retry`/
+`Rejected`), expirado (com e sem tolerância de `ClockSkew`), `iat` no futuro, mais velho que
+`MaxAssertionAge`, JWS malformado (partes erradas, base64 inválido, `alg`≠ES256, `kid` ausente,
+claim obrigatório ausente), JWKS indisponível/malformado, cache entre chamadas para a mesma URL.
 Smoke pós-deploy (GS-07) não se aplica a esta lib isoladamente — corre no serviço consumidor
 contra hml/prd quando `native-biometrics-backend`/`native-kyc-backend` existirem.
 
@@ -170,6 +214,8 @@ contra hml/prd quando `native-biometrics-backend`/`native-kyc-backend` existirem
 Biblioteca, não serviço deployado — "rollout" é publicação SemVer:
 - `0.1.0`: release inicial via tag `v0.1.0` em `main`, publicado no NuGet (fluxo do
   `.github/workflows/dotnet.yml`, `secrets.NUGET_API_KEY`).
+- `0.2.0`: mesmo fluxo, tag `v0.2.0`, após o PR `feat/assertion-iss-aud-verifier` mergear em
+  `develop` e depois `main` (GS-01). Breaking changes documentadas no `CHANGELOG.md` (pré-1.0).
 - Sem flag de feature — mudança de comportamento (ex.: ajuste de limiar padrão de
   `BiometricPolicy`) é sempre explícita via novo parâmetro nomeado ou novo major.
 - Consumo real (`native-biometrics-backend`/`native-kyc-backend`) valida a integração contra
@@ -178,9 +224,23 @@ Biblioteca, não serviço deployado — "rollout" é publicação SemVer:
 
 ## 10. Questões em Aberto · dono: autor
 
-- `IAssertionVerifier` (contraparte de `IAssertionSigner`) fica para quando houver uma relying
-  party concreta — qual formato de chave pública ela espera (JWKS? KMS `GetPublicKey`?) ainda não
-  está definido.
+- ~~`IAssertionVerifier` fica para quando houver uma relying party concreta~~ — **resolvido em
+  0.2.0**: duas relying parties concretas (NativeGuard, Passly) confirmaram independentemente o
+  formato esperado (JWKS, RFC 7517) ao construir suas próprias cópias do verifier antes desta
+  lib ter uma; `JwksAssertionVerifier` segue exatamente essa forma (fetch+cache de JWKS, `kid` no
+  header, `ECDsa.VerifyData`). Nenhum dos dois repos foi migrado para consumir esta lib — ADR-0003
+  já os levou a manter cópias próprias; a decisão de migrar (ou não) é deles, não desta spec.
+- **Sem `iss`/`aud` era o gap real, não o formato de verificação.** `SPEC-guard-0001` §10 e
+  `SPEC-passkey-0002` §10 apontaram o mesmo problema de forma independente: sem esses dois
+  claims, a única amarração real contra "asserção de outro emissor/RP" era a configuração de
+  `jwksUrl` por operador + `tenant_id` = id do tenant do consumidor + replay guard por `jti` — o
+  que já era suficiente na prática, mas não era uma amarração criptográfica explícita. Resolvido
+  nesta versão (`iss`/`aud` agora fazem parte do payload assinado e são validados pelo verifier).
+- **`aud` ainda depende de configuração manual por par de produtos.** O default do assinante
+  (`[TenantId]`) só funciona se o `tenantId` do produto emissor e o id que o RP usa como
+  audiência esperada forem o mesmo valor — mesma pegadinha de mapeamento `tenant_id`↔`realmId`/
+  `projectId` já registrada nas specs de NativeGuard/Passly. Quando não forem o mesmo valor, o
+  chamador do signer deve passar `Audience` explicitamente; não há descoberta automática.
 - `PublicAPI.Shipped.txt` ainda não existe (lib em `0.x`); adicionar antes de `1.0.0`.
 - Se `native-biometrics-backend`/`native-kyc-backend` precisarem de suporte a ES384/ES512 além de
   ES256/RS256, `EcdsaSignatureConverter.DerToJose` já aceita `fieldSizeBytes` parametrizável — só

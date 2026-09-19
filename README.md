@@ -16,7 +16,11 @@ Native AOT compatible.
 - **`BiometricDecision.Evaluate`** turns raw scores into `Verified`/`Retry`/`Rejected` against a
   `BiometricPolicy` — pure function, no AWS SDK, fully unit-testable on its own.
 - **`KmsAssertionSigner`** signs a `BiometricAssertion` into a compact JWS (ES256/RS256) using a
-  KMS asymmetric key, so a relying party can verify it offline.
+  KMS asymmetric key, so a relying party can verify it offline. Every assertion carries standard
+  JWT claims (`iss`, `aud`, `sub`, `iat`, `exp`, `jti`) alongside the domain's own custom claims
+  (`tenant_id`, `user_ref`, `purpose`, `decision`, scores).
+- **`JwksAssertionVerifier`** is the counterpart: verifies a compact JWS against a published JWKS
+  (`iss`/`aud`/`purpose`/`decision`/expiry), for a relying party that doesn't want to hand-roll it.
 - This library never persists images, never writes to storage, and never logs a biometric score.
 
 ## Installation
@@ -39,7 +43,16 @@ services.AddSingleton<IAmazonKeyManagementService>(new AmazonKeyManagementServic
 
 services.AddNativeIdentityCoreLiveness();
 services.AddNativeIdentityCoreFaceIndex(new RekognitionFaceIndexOptions(Product: "kyc", Environment: "hml"));
-services.AddNativeIdentityCoreAssertionSigner(new KmsAssertionSignerOptions("alias/identity-assertions", AssertionSigningAlgorithm.Es256));
+
+// `Issuer` is required and validated as an absolute URI — read it from configuration
+// (e.g. `ASSERTION_ISSUER`), never hardcode a domain. There is no confirmed public host for
+// every identity product yet; let the consuming service's own config decide.
+services.AddNativeIdentityCoreAssertionSigner(new KmsAssertionSignerOptions(
+    "alias/identity-assertions", AssertionSigningAlgorithm.Es256, issuer: configuredIssuer));
+
+// Only needed by a relying party that verifies assertions issued elsewhere (e.g. NativeGuard,
+// Passly, or a third-party IdP) — most producers only need the signer above.
+services.AddNativeIdentityCoreAssertionVerifier();
 ```
 
 ### 2. Run a liveness check, then enroll or verify a face
@@ -77,10 +90,32 @@ if (decision.Outcome is BiometricOutcome.Verified)
         tenantId, userRef, BiometricAssertionPurpose.Verification,
         result.Confidence, search.BestMatch?.Similarity, decision.Outcome,
         IssuedAt: timeProvider.GetUtcNow(), ExpiresAt: timeProvider.GetUtcNow().AddMinutes(5),
-        CorrelationId: correlationId);
+        Jti: correlationId);
+        // Audience left at its default (null) -> the signer defaults `aud` to [tenantId];
+        // pass Audience: [rpId] explicitly to target a different, tenant-configured audience.
 
     var jws = await assertionSigner.SignAsync(assertion);
     // hand `jws` to the relying party
+}
+```
+
+### 4. (Relying party) Verify an assertion issued elsewhere
+
+```csharp
+var result = await assertionVerifier.VerifyAsync(
+    new AssertionVerifierOptions(
+        JwksUrl: "https://issuer-configured-per-tenant/.well-known/jwks.json",
+        ExpectedIssuer: configuredIssuer,      // configuration — never a hardcoded domain
+        ExpectedAudience: [tenantId],
+        ExpectedPurpose: BiometricAssertionPurpose.Recovery,
+        MaxAssertionAge: TimeSpan.FromMinutes(5),
+        ClockSkew: TimeSpan.FromSeconds(30)),
+    assertionJws,
+    now: timeProvider.GetUtcNow());
+
+if (result.IsValid)
+{
+    // result.Assertion!.Jti — track it yourself for replay protection; this library doesn't.
 }
 ```
 
@@ -106,6 +141,14 @@ if (decision.Outcome is BiometricOutcome.Verified)
   this library's own logging never does, and neither should yours downstream.
 - Treating a `Retry`/`Rejected` `BiometricAssertion` as authorization — only `Verified` assertions
   should let a relying party proceed; the others exist for audit trail.
+- Hardcoding `KmsAssertionSignerOptions.Issuer`/`AssertionVerifierOptions.ExpectedIssuer` to a
+  literal domain string — read it from your service's own configuration; a product may not have a
+  confirmed public host yet, and the issuer can differ per environment (hml/prd).
+- Trusting a caller-supplied `BiometricAssertion.Issuer` when signing — `KmsAssertionSigner` always
+  stamps `iss` from its own `KmsAssertionSignerOptions.Issuer`, by design; that field on
+  `BiometricAssertion` only carries a meaningful value on the verifier's *output*.
+- Treating `IAssertionVerifier`'s successful result as replay-safe — it isn't. Track consumed
+  `Jti` values yourself (e.g. a conditional-write replay guard) the same way NativeGuard/Passly do.
 
 ## Public API surface
 
@@ -120,10 +163,15 @@ if (decision.Outcome is BiometricOutcome.Verified)
 
 `Native.IdentityCore.Assertions` — `BiometricAssertion`, `BiometricAssertionPurpose`,
 `IAssertionSigner`, `KmsAssertionSigner`, `KmsAssertionSignerOptions`, `AssertionSigningAlgorithm`,
-`EcdsaSignatureConverter`.
+`EcdsaSignatureConverter`, `AssertionPayload`, `IAssertionVerifier`, `JwksAssertionVerifier`,
+`AssertionVerifierOptions`, `AssertionVerificationResult`, `AssertionVerificationError`,
+`JwkDto`, `JwksDocumentDto`.
+
+`Native.IdentityCore.Serialization` — `IdentityCoreJsonSerializerContext`, `AudienceJsonConverter`.
 
 `Native.IdentityCore` — `ServiceCollectionExtensions` (`AddNativeIdentityCoreLiveness`,
-`AddNativeIdentityCoreFaceIndex`, `AddNativeIdentityCoreAssertionSigner`).
+`AddNativeIdentityCoreFaceIndex`, `AddNativeIdentityCoreAssertionSigner`,
+`AddNativeIdentityCoreAssertionVerifier`).
 
 ## Contributing
 

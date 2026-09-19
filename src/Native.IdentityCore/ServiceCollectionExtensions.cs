@@ -38,4 +38,16 @@ public static class ServiceCollectionExtensions
             .AddSingleton(options)
             .AddSingleton<IAssertionSigner, KmsAssertionSigner>();
     }
+
+    /// <summary>
+    /// Registers <see cref="IAssertionVerifier"/> backed by JWKS fetch/cache — no KMS, no
+    /// reflection. Registers its own <see cref="HttpClient"/> (pooled <see cref="SocketsHttpHandler"/>,
+    /// same convention as the ecosystem's other JWKS verifiers); callers that already manage an
+    /// <see cref="HttpClient"/> for this purpose can instead register <see cref="JwksAssertionVerifier"/>
+    /// directly with their own instance.
+    /// </summary>
+    public static IServiceCollection AddNativeIdentityCoreAssertionVerifier(this IServiceCollection services) =>
+        services
+            .AddSingleton(_ => JwksAssertionVerifier.CreateDefaultHttpClient())
+            .AddSingleton<IAssertionVerifier, JwksAssertionVerifier>();
 }

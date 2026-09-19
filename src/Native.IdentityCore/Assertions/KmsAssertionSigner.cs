@@ -17,7 +17,7 @@ public sealed class KmsAssertionSigner(IAmazonKeyManagementService kms, KmsAsser
     private const int P256FieldSizeBytes = 32;
 
     private readonly IAmazonKeyManagementService _kms = kms ?? throw new ArgumentNullException(nameof(kms));
-    private readonly KmsAssertionSignerOptions _options = options ?? throw new ArgumentNullException(nameof(options));
+    private readonly KmsAssertionSignerOptions _options = ValidateOptions(options);
 
     public async ValueTask<string> SignAsync(BiometricAssertion assertion, CancellationToken cancellationToken = default)
     {
@@ -25,7 +25,7 @@ public sealed class KmsAssertionSigner(IAmazonKeyManagementService kms, KmsAsser
         assertion.Validate();
 
         var header = new JwsHeader(Alg: AlgHeaderValue(_options.Algorithm), Typ: "biometric-assertion+jws", Kid: _options.KeyId);
-        var payload = AssertionPayload.FromAssertion(assertion);
+        var payload = AssertionPayload.FromAssertion(assertion, _options.Issuer);
 
         var headerJson = JsonSerializer.SerializeToUtf8Bytes(header, IdentityCoreJsonSerializerContext.Default.JwsHeader);
         var payloadJson = JsonSerializer.SerializeToUtf8Bytes(payload, IdentityCoreJsonSerializerContext.Default.AssertionPayload);
@@ -70,6 +70,19 @@ public sealed class KmsAssertionSigner(IAmazonKeyManagementService kms, KmsAsser
         AssertionSigningAlgorithm.Rs256 => SigningAlgorithmSpec.RSASSA_PKCS1_V1_5_SHA_256,
         _ => throw UnsupportedAlgorithm(algorithm),
     };
+
+    private static KmsAssertionSignerOptions ValidateOptions(KmsAssertionSignerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (!Uri.TryCreate(options.Issuer, UriKind.Absolute, out _))
+        {
+            throw new ArgumentException(
+                $"Issuer must be an absolute URI (got \"{options.Issuer}\"). Configure it, never hardcode a domain.",
+                nameof(options));
+        }
+
+        return options;
+    }
 
     private static ArgumentOutOfRangeException UnsupportedAlgorithm(AssertionSigningAlgorithm algorithm) =>
         new(nameof(algorithm), algorithm, "Unsupported signing algorithm.");

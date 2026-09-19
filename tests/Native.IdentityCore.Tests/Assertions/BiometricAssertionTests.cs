@@ -17,7 +17,7 @@ public class BiometricAssertionTests
         Decision: BiometricOutcome.Verified,
         IssuedAt: IssuedAt,
         ExpiresAt: IssuedAt.AddMinutes(5),
-        CorrelationId: IdentityCoreFakers.NewCorrelationId());
+        Jti: IdentityCoreFakers.NewJti());
 
     [Fact]
     public void Validate_AllFieldsPresent_ReturnsSameInstance()
@@ -59,10 +59,10 @@ public class BiometricAssertionTests
     }
 
     [Fact]
-    public void Validate_MissingCorrelationId_ThrowsArgumentException()
+    public void Validate_MissingJti_ThrowsArgumentException()
     {
         // Arrange
-        var assertion = CreateValid() with { CorrelationId = string.Empty };
+        var assertion = CreateValid() with { Jti = string.Empty };
 
         // Act
         var act = () => assertion.Validate();
@@ -82,5 +82,19 @@ public class BiometricAssertionTests
 
         // Assert
         Should.Throw<ArgumentException>(act);
+    }
+
+    [Fact]
+    public void Validate_IssuerAndAudienceLeftAtDefaults_DoesNotThrow()
+    {
+        // Arrange — the signer, not the caller, stamps `iss`; `aud` defaults to [TenantId].
+        var assertion = CreateValid();
+
+        // Act
+        var result = assertion.Validate();
+
+        // Assert
+        result.Issuer.ShouldBe(string.Empty);
+        result.Audience.ShouldBeNull();
     }
 }

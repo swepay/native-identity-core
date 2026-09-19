@@ -1,0 +1,63 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Toda segunda-feira às 04:00 América/São_Paulo (07:00 UTC)
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nuget-vulnerable:
+    name: NuGet vulnerable packages scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Scan for known vulnerabilities (fail on high/critical)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Running dotnet list package --vulnerable --include-transitive ..."
+          OUTPUT=$(dotnet list package --vulnerable --include-transitive 2>&1 || true)
+          echo "$OUTPUT"
+          echo "$OUTPUT" > vulnerable-packages.txt
+
+          # Fail if any High or Critical vulnerabilities are reported
+          if echo "$OUTPUT" | grep -E '>\s*(High|Critical)\s*\|' ; then
+            echo "::error::High or Critical severity vulnerabilities detected in NuGet dependencies"
+            exit 1
+          fi
+
+          echo "No High or Critical severity vulnerabilities detected."
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vulnerable-packages-report
+          path: vulnerable-packages.txt
+          retention-days: 30
+
+  # Placeholder for future expansion:
+  # - dotnet list package --deprecated
+  # - CodeQL analysis
+  # - SBOM generation (CycloneDX)

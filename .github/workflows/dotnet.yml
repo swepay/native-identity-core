@@ -33,7 +33,7 @@ jobs:
         run: dotnet format --verify-no-changes
 
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: ./tests/**/coverage.cobertura.xml
           fail_ci_if_error: false

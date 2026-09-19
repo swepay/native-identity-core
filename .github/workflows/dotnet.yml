@@ -27,7 +27,39 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
-        run: dotnet test --no-build --configuration Release --settings coverlet.runsettings --verbosity normal --collect:"XPlat Code Coverage"
+        run: |
+          dotnet test --no-build --configuration Release --settings coverlet.runsettings \
+            --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./TestResults
+
+      - name: "Enforce coverage gate (GS-07 - 85% line / 70% branch)"
+        run: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool --version 5.5.11
+          reportgenerator \
+            -reports:"./TestResults/**/coverage.cobertura.xml" \
+            -targetdir:"./TestResults/report" \
+            -reporttypes:"TextSummary"
+          cat ./TestResults/report/Summary.txt
+
+          # coverlet.runsettings' own <Threshold> is not enforced by the "XPlat Code
+          # Coverage" VSTest collector (that's a coverlet.msbuild-only feature) — dotnet
+          # test exits 0 regardless of coverage. Gate explicitly on the merged report,
+          # same approach as native-kyc-backend's fix for this exact gap.
+          LINE=$(grep -oP 'Line coverage: \K[0-9.]+' ./TestResults/report/Summary.txt)
+          BRANCH=$(grep -oP 'Branch coverage: \K[0-9.]+' ./TestResults/report/Summary.txt)
+
+          echo "Merged line coverage: ${LINE}% (gate: 85%)"
+          echo "Merged branch coverage: ${BRANCH}% (gate: 70%)"
+
+          FAILED=0
+          if (( $(echo "$LINE < 85" | bc -l) )); then
+            echo "::error::Line coverage ${LINE}% is below the 85% gate."
+            FAILED=1
+          fi
+          if (( $(echo "$BRANCH < 70" | bc -l) )); then
+            echo "::error::Branch coverage ${BRANCH}% is below the 70% gate."
+            FAILED=1
+          fi
+          exit $FAILED
 
       - name: Verify formatting
         run: dotnet format --verify-no-changes
@@ -35,7 +67,7 @@ jobs:
       - name: Upload coverage reports
         uses: codecov/codecov-action@v6
         with:
-          files: ./tests/**/coverage.cobertura.xml
+          files: ./TestResults/**/coverage.cobertura.xml
           fail_ci_if_error: false
 
       - name: Pack NuGet package

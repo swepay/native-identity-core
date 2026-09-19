@@ -32,6 +32,12 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # actions/checkout@v4 is the ecosystem-pinned LTS version (GS-01,
+    # docs/ecosystem-standardization.md §2.5) — major bumps go through a
+    # deliberate, coordinated upgrade across repos, not an automated PR.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
       include: "scope"

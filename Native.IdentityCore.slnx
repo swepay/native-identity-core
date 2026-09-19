@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/01 - Library/">
+    <Project Path="src/Native.IdentityCore/Native.IdentityCore.csproj" />
+  </Folder>
+  <Folder Name="/99 - Tests/">
+    <Project Path="tests/Native.IdentityCore.Tests/Native.IdentityCore.Tests.csproj" />
+  </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="coverlet.runsettings" />
+    <File Path="global.json" />
+    <File Path="README.md" />
+    <File Path="CHANGELOG.md" />
+  </Folder>
+</Solution>

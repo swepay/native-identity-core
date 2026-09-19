@@ -155,7 +155,9 @@ public class KmsAssertionSignerTests
     [InlineData("native-biometrics")] // slug, not a URI — the pre-existing default this option must reject
     [InlineData("")]
     [InlineData("not a uri")]
-    [InlineData("/relative/path")]
+    [InlineData("/relative/path")] // absolute *file* URI on Unix — must still be rejected
+    [InlineData("file:///etc/issuer")]
+    [InlineData("http://insecure.example")]
     public void Constructor_IssuerNotAnAbsoluteUri_ThrowsArgumentException(string invalidIssuer)
     {
         // Arrange

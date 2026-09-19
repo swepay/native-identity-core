@@ -10,6 +10,8 @@ namespace Native.IdentityCore.Serialization;
 /// </summary>
 [JsonSerializable(typeof(JwsHeader))]
 [JsonSerializable(typeof(AssertionPayload))]
+[JsonSerializable(typeof(JwkDto))]
+[JsonSerializable(typeof(JwksDocumentDto))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

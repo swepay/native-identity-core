@@ -49,7 +49,7 @@ public class ServiceCollectionExtensionsTests
     public void AddNativeIdentityCoreAssertionSigner_ResolvesKmsImplementation()
     {
         // Arrange
-        var options = new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256);
+        var options = new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256, "https://biometrics.example.test");
         var provider = NewServices().AddNativeIdentityCoreAssertionSigner(options).BuildServiceProvider();
 
         // Act
@@ -57,6 +57,22 @@ public class ServiceCollectionExtensionsTests
 
         // Assert
         service.ShouldBeOfType<KmsAssertionSigner>();
+    }
+
+    [Fact]
+    public void AddNativeIdentityCoreAssertionVerifier_ResolvesJwksImplementation()
+    {
+        // Arrange
+        var provider = NewServices()
+            .AddSingleton<ILogger<JwksAssertionVerifier>>(NullLogger<JwksAssertionVerifier>.Instance)
+            .AddNativeIdentityCoreAssertionVerifier()
+            .BuildServiceProvider();
+
+        // Act
+        var service = provider.GetRequiredService<IAssertionVerifier>();
+
+        // Assert
+        service.ShouldBeOfType<JwksAssertionVerifier>();
     }
 
     [Fact]

@@ -23,7 +23,10 @@ public class KmsAssertionSignerTests
         Decision: BiometricOutcome.Verified,
         IssuedAt: IssuedAt,
         ExpiresAt: IssuedAt.AddMinutes(5),
-        CorrelationId: IdentityCoreFakers.NewCorrelationId());
+        Jti: IdentityCoreFakers.NewJti());
+
+    private static KmsAssertionSignerOptions Options(string keyId, AssertionSigningAlgorithm algorithm) =>
+        new(keyId, algorithm, IdentityCoreFakers.TestIssuer);
 
     private static (string Header, string Payload, string Signature) SplitJws(string jws)
     {
@@ -53,7 +56,7 @@ public class KmsAssertionSignerTests
                 capturedMessageBytes = r.Message.ToArray();
             }), Arg.Any<CancellationToken>())
             .Returns(new SignResponse { Signature = new MemoryStream(der), KeyId = "kms-key" });
-        var sut = new KmsAssertionSigner(kms, new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256));
+        var sut = new KmsAssertionSigner(kms, Options("kms-key", AssertionSigningAlgorithm.Es256));
         var assertion = CreateAssertion();
 
         // Act
@@ -70,6 +73,10 @@ public class KmsAssertionSignerTests
         payload.UserRef.ShouldBe(assertion.UserRef);
         payload.Decision.ShouldBe(BiometricOutcome.Verified);
         payload.IssuedAtUnixSeconds.ShouldBe(assertion.IssuedAt.ToUnixTimeSeconds());
+        payload.Issuer.ShouldBe(IdentityCoreFakers.TestIssuer);
+        payload.Subject.ShouldBe(assertion.UserRef);
+        payload.Jti.ShouldBe(assertion.Jti);
+        payload.Audience.ShouldBe([assertion.TenantId]); // default audience strategy: no explicit Audience -> [TenantId]
 
         var expectedSignature = EcdsaSignatureConverter.DerToJose(der, 32);
         Base64UrlDecode(signatureB64).ShouldBe(expectedSignature);
@@ -89,7 +96,7 @@ public class KmsAssertionSignerTests
         var rawSignature = IdentityCoreFakers.NewImageBytes(256);
         kms.SignAsync(Arg.Any<SignRequest>(), Arg.Any<CancellationToken>())
             .Returns(new SignResponse { Signature = new MemoryStream(rawSignature), KeyId = "rsa-key" });
-        var sut = new KmsAssertionSigner(kms, new KmsAssertionSignerOptions("rsa-key", AssertionSigningAlgorithm.Rs256));
+        var sut = new KmsAssertionSigner(kms, Options("rsa-key", AssertionSigningAlgorithm.Rs256));
 
         // Act
         var jws = await sut.SignAsync(CreateAssertion());
@@ -110,7 +117,7 @@ public class KmsAssertionSignerTests
     {
         // Arrange
         var kms = Substitute.For<IAmazonKeyManagementService>();
-        var sut = new KmsAssertionSigner(kms, new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256));
+        var sut = new KmsAssertionSigner(kms, Options("kms-key", AssertionSigningAlgorithm.Es256));
         var invalid = CreateAssertion() with { TenantId = string.Empty };
 
         // Act
@@ -125,7 +132,7 @@ public class KmsAssertionSignerTests
     public void Constructor_NullKms_ThrowsArgumentNullException()
     {
         // Arrange / Act
-        var act = () => new KmsAssertionSigner(null!, new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256));
+        var act = () => new KmsAssertionSigner(null!, Options("kms-key", AssertionSigningAlgorithm.Es256));
 
         // Assert
         Should.Throw<ArgumentNullException>(act);
@@ -142,6 +149,44 @@ public class KmsAssertionSignerTests
 
         // Assert
         Should.Throw<ArgumentNullException>(act);
+    }
+
+    [Theory]
+    [InlineData("native-biometrics")] // slug, not a URI — the pre-existing default this option must reject
+    [InlineData("")]
+    [InlineData("not a uri")]
+    [InlineData("/relative/path")]
+    public void Constructor_IssuerNotAnAbsoluteUri_ThrowsArgumentException(string invalidIssuer)
+    {
+        // Arrange
+        var kms = Substitute.For<IAmazonKeyManagementService>();
+
+        // Act
+        var act = () => new KmsAssertionSigner(kms, new KmsAssertionSignerOptions("kms-key", AssertionSigningAlgorithm.Es256, invalidIssuer));
+
+        // Assert
+        Should.Throw<ArgumentException>(act);
+        kms.ReceivedCalls().ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task SignAsync_WithExplicitAudience_OverridesTheDefaultTenantIdAudience()
+    {
+        // Arrange
+        var kms = Substitute.For<IAmazonKeyManagementService>();
+        var der = BuildDerSequence(Enumerable.Repeat((byte)0x03, 32).ToArray(), Enumerable.Repeat((byte)0x04, 32).ToArray());
+        kms.SignAsync(Arg.Any<SignRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new SignResponse { Signature = new MemoryStream(der), KeyId = "kms-key" });
+        var sut = new KmsAssertionSigner(kms, Options("kms-key", AssertionSigningAlgorithm.Es256));
+        var assertion = CreateAssertion() with { Audience = ["urn:swepay:passly:project-42"] };
+
+        // Act
+        var jws = await sut.SignAsync(assertion);
+
+        // Assert
+        var (_, payloadB64, _) = SplitJws(jws);
+        var payload = JsonSerializer.Deserialize(Base64UrlDecode(payloadB64), IdentityCoreJsonSerializerContext.Default.AssertionPayload);
+        payload!.Audience.ShouldBe(["urn:swepay:passly:project-42"]);
     }
 
     private static byte[] BuildDerSequence(byte[] r, byte[] s)

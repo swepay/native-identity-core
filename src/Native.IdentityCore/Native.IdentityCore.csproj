@@ -11,7 +11,7 @@
 
     <!-- Package metadata -->
     <PackageId>Native.IdentityCore</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Swepay</Authors>
     <Description>Shared-kernel support library for Swepay identity products (biometrics, KYC, 3DS): face liveness, per-tenant face index and a pure biometric decision policy over Amazon Rekognition, plus a KMS-backed signer for biometric assertions. Native AOT compatible.</Description>
     <PackageTags>biometrics;liveness;rekognition;identity;kyc;native-aot;kms;jws</PackageTags>

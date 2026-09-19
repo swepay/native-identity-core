@@ -74,10 +74,13 @@ public sealed class KmsAssertionSigner(IAmazonKeyManagementService kms, KmsAsser
     private static KmsAssertionSignerOptions ValidateOptions(KmsAssertionSignerOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
-        if (!Uri.TryCreate(options.Issuer, UriKind.Absolute, out _))
+        // Uri.TryCreate(.., Absolute) accepts rooted paths on Unix ("/x" => file:///x), so the
+        // scheme check is what actually enforces "an https issuer" on every platform.
+        if (!Uri.TryCreate(options.Issuer, UriKind.Absolute, out var issuer)
+            || issuer.Scheme != Uri.UriSchemeHttps)
         {
             throw new ArgumentException(
-                $"Issuer must be an absolute URI (got \"{options.Issuer}\"). Configure it, never hardcode a domain.",
+                $"Issuer must be an absolute https URI (got \"{options.Issuer}\"). Configure it, never hardcode a domain.",
                 nameof(options));
         }
 

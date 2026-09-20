@@ -141,5 +141,67 @@ public class RekognitionLivenessSessionServiceTests
         result.IsFinal.ShouldBeFalse();
         result.ReferenceImage.ShouldBeNull();
         result.AuditImages.ShouldBeEmpty();
+        result.ReferenceImageS3.ShouldBeNull();
+        result.AuditImagesS3.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task GetSessionResultAsync_Succeeded_WithS3OutputConfigured_MapsS3LocationsAndLeavesBytesEmpty()
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        rekognition.GetFaceLivenessSessionResultsAsync(Arg.Any<GetFaceLivenessSessionResultsRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new GetFaceLivenessSessionResultsResponse
+            {
+                SessionId = SessionId1,
+                Status = "SUCCEEDED",
+                Confidence = 96.2f,
+                ReferenceImage = new AuditImage { S3Object = new S3Object { Bucket = "liveness-bucket", Name = "hml/reference.jpg", Version = "v1" } },
+                AuditImages =
+                [
+                    new AuditImage { S3Object = new S3Object { Bucket = "liveness-bucket", Name = "hml/audit-0.jpg", Version = null } },
+                ],
+            });
+        var sut = CreateSut(rekognition);
+
+        // Act
+        var result = await sut.GetSessionResultAsync(IdentityCoreFakers.NewTenantId(), SessionId1);
+
+        // Assert
+        result.ReferenceImage.ShouldBeNull();
+        result.AuditImages.ShouldBeEmpty();
+        result.ReferenceImageS3.ShouldNotBeNull();
+        result.ReferenceImageS3!.Bucket.ShouldBe("liveness-bucket");
+        result.ReferenceImageS3.Key.ShouldBe("hml/reference.jpg");
+        result.ReferenceImageS3.Version.ShouldBe("v1");
+        result.AuditImagesS3.ShouldNotBeNull();
+        result.AuditImagesS3!.Count.ShouldBe(1);
+        result.AuditImagesS3[0].Key.ShouldBe("hml/audit-0.jpg");
+        result.AuditImagesS3[0].Version.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task GetSessionResultAsync_Succeeded_WithS3OutputConfiguredAndNoAuditImages_ReturnsEmptyNotNullAuditImagesS3()
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        rekognition.GetFaceLivenessSessionResultsAsync(Arg.Any<GetFaceLivenessSessionResultsRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new GetFaceLivenessSessionResultsResponse
+            {
+                SessionId = SessionId1,
+                Status = "SUCCEEDED",
+                Confidence = 96.2f,
+                ReferenceImage = new AuditImage { S3Object = new S3Object { Bucket = "liveness-bucket", Name = "hml/reference.jpg" } },
+                AuditImages = [],
+            });
+        var sut = CreateSut(rekognition);
+
+        // Act
+        var result = await sut.GetSessionResultAsync(IdentityCoreFakers.NewTenantId(), SessionId1);
+
+        // Assert
+        result.ReferenceImageS3.ShouldNotBeNull();
+        result.AuditImagesS3.ShouldNotBeNull();
+        result.AuditImagesS3.ShouldBeEmpty();
     }
 }

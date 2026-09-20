@@ -48,14 +48,22 @@ antes deles para que ambos partam consumindo o mesmo contrato desde o primeiro c
   `native-biometrics-backend`/`native-kyc-backend` via `RoutedApiGatewayFunction` deles.
 - Não gerencia ciclo de vida de chave KMS (rotação, política) nem de coleção Rekognition além de
   criar/ler/remover — isso é responsabilidade operacional do serviço consumidor.
-- Não persiste imagem em nenhum momento (nem em disco, nem em S3, nem em banco) — quem decide se
-  e onde armazenar uma imagem de referência é o chamador.
+- A própria lib nunca persiste imagem (nem em disco, nem em S3, nem em banco) — quem decide se e
+  onde armazenar uma imagem de referência é o chamador. **Ajustado em 0.3.0:** o chamador pode
+  optar por deixar o próprio Rekognition escrever em S3 (`LivenessSessionOptions.OutputS3Bucket`,
+  issue #14) — a lib não escreve nada nesse fluxo, mas deixa de ser verdade que "nenhuma imagem é
+  persistida em algum lugar" quando essa opção é usada; ver trade-off LGPD em §6.
 - ~~Não implementa verificação de assertion~~ — **superado em 0.2.0** (2026-09-19):
   `IAssertionVerifier`/`JwksAssertionVerifier` chegaram nesta mesma spec (ver §3/§4/§10) assim
   que duas relying parties concretas (NativeGuard `SPEC-guard-0001` e Passly
   `SPEC-passkey-0002`) confirmaram, de forma independente, o mesmo gap (sem `iss`/`aud` na
   asserção). O verifier não é consumido por elas nesta mudança — ADR-0003 já as levou a manter
   cópias próprias do contrato JWS; fica disponível para quem nascer depois preferindo a lib.
+- ~~Não expõe o lado emissor do JWKS~~ — **superado em 0.3.0** (2026-09-19):
+  `IAssertionKeyPublisher`/`KmsAssertionKeyPublisher` chegam nesta mesma spec (ver §3/§4/§10),
+  achados durante a adoção real da 0.2.0 em `native-biometrics-backend` (PR #19 — issue #16): o
+  produto emissor precisou de uma porta própria (`IAssertionPublicKeyProvider`) sobre
+  `kms:GetPublicKey` porque a lib só tinha o lado verificador.
 
 ## 3. Design Proposto · dono: `architect`
 
@@ -119,6 +127,23 @@ namespace). Pontos centrais do contrato:
   `AssertionVerificationResult` — verifica JWKS/ES256, `iss`/`aud`/`purpose`/`decision`/
   `exp`/`iat` (com `ClockSkew`/`MaxAssertionAge`) e devolve o `BiometricAssertion` assinado
   (incluindo `Jti`, para o chamador implementar seu próprio guard de replay).
+- **[0.3.0 — issue #14]** `LivenessSessionResult` ganha `ReferenceImageS3`/`AuditImagesS3`
+  (`S3ImageReference`: `Bucket`/`Key`/`Version` opcional), populados apenas quando a sessão foi
+  criada com `LivenessSessionOptions.OutputS3Bucket` — mutuamente exclusivos com
+  `ReferenceImage`/`AuditImages` (o Rekognition nunca preenche os dois canais para a mesma
+  sessão). `LivenessSessionOptions` já tinha `OutputS3Bucket`/`OutputS3KeyPrefix` desde a 0.1.0 —
+  só faltava expor o resultado.
+- **[0.3.0 — issue #15]** `IFaceIndex` ganha `DeleteByFaceIdAsync(tenantId, faceId, ct)` (delete
+  direto, sem `ListFaces`) e `DeleteCollectionAsync(tenantId, ct)` (purga de tenant, idempotente).
+  A proposta original da issue #15 pedia uma sobrecarga `DeleteAsync(tenantId, faceId)` — inviável
+  em C# (ambos os parâmetros são `string`, colidiria com `DeleteAsync(tenantId, userRef)`
+  existente); `DeleteByFaceIdAsync` entrega a mesma intenção sob nome distinto.
+- **[0.3.0 — issue #16]** `IAssertionKeyPublisher.GetJwksAsync(ct)` → `JwksDocumentDto` e
+  `KmsAssertionKeyPublisher` (sobre `kms:GetPublicKey`, cache com TTL configurável, múltiplos
+  `KeyIds` para rotação — o primeiro é a chave de assinatura ativa). `JwkDto` ganha `Alg`/`Use`
+  opcionais (RFC 7517 §4.4/§4.2), ignorados pelo `JwksAssertionVerifier` (que só lê
+  `kty`/`kid`/`crv`/`x`/`y`) — reutiliza o mesmo `JwksDocumentDto`/`JwkDto` do lado verificador,
+  não um tipo novo, para que emissor e verificador nunca divirjam no formato de fio.
 
 **Breaking changes:**
 - `0.1.0` → `0.2.0`: `BiometricAssertion.CorrelationId` renomeado para `Jti`;
@@ -126,6 +151,12 @@ namespace). Pontos centrais do contrato:
   documentadas no `CHANGELOG.md`. Biblioteca ainda pré-1.0 — a partir de `1.0.0`, qualquer
   alteração nas assinaturas passa a exigir major + `PublicAPI.Shipped.txt` (a introduzir em
   `1.0.0`) + seção "Breaking Changes" no `CHANGELOG.md`.
+- `0.2.0` → `0.3.0`: `IFaceIndex` ganhou dois membros novos (`DeleteByFaceIdAsync`,
+  `DeleteCollectionAsync`) — breaking apenas para uma implementação própria de `IFaceIndex` fora
+  desta lib (nenhuma existe hoje nos quatro consumidores; todos usam `RekognitionFaceIndex`).
+  Nenhuma chamada existente a `DeleteAsync(tenantId, userRef)` deixa de compilar ou muda de
+  comportamento. Demais adições da 0.3.0 (S3 no resultado de liveness, `IAssertionKeyPublisher`,
+  `JwkDto.Alg`/`Use`) são puramente aditivas.
 
 ## 5. Modelo de Dados · dono: `developer`
 
@@ -155,18 +186,35 @@ limite de 255 caracteres (limite nativo do Rekognition). Ver `FaceCollectionNami
   aplicar IAM/condition keys por coleção (fora do escopo desta lib).
 - **LGPD/Bacen (GS-09 — `bacen-lgpd-checklist`):** dado biométrico é dado pessoal sensível (LGPD
   art. 5º, XI). Esta lib:
-  - **nunca persiste** a imagem capturada — ela trafega em memória (`ReadOnlyMemory<byte>`) e é
-    responsabilidade do chamador decidir se/onde armazenar (retenção é decisão do produto, não
-    desta lib);
+  - **nunca persiste** a imagem capturada por conta própria — em modo inline ela trafega em
+    memória (`ReadOnlyMemory<byte>`) e é responsabilidade do chamador decidir se/onde armazenar
+    (retenção é decisão do produto, não desta lib);
+  - **[0.3.0 — issue #14] trade-off do modo S3:** quando o chamador configura
+    `LivenessSessionOptions.OutputS3Bucket`, é o próprio Rekognition (não esta lib) quem grava a
+    imagem no bucket do chamador de forma durável — deixa de ser verdade que "nada é persistido"
+    nesse fluxo. Esta lib expõe a localização (`ReferenceImageS3`/`AuditImagesS3`) mas nunca lê,
+    escreve ou apaga esse objeto. O consumidor que optar por este modo **deve** configurar uma
+    regra de expiração (S3 Lifecycle) ou outro mecanismo de exclusão consistente com sua própria
+    política de retenção/direito ao esquecimento para dado biométrico — não há default seguro
+    porque a lib não tem visibilidade da política de retenção do produto;
   - **nunca loga** score de confiança/similaridade, payload de assertion ou bytes de imagem —
     logs carregam apenas `tenantId`/`sessionId`/contagens, para correlação (GS-11) sem expor dado
     sensível;
   - emite `BiometricAssertion` com `TenantId`/`UserRef`/scores/decisão — o produto consumidor é
     quem define retenção e direito de exclusão desse registro (a lib não grava nada por conta
     própria, então "direito ao esquecimento" recai sobre o armazenamento do consumidor).
+  - **[0.3.0 — issue #15]** `IFaceIndex.DeleteCollectionAsync`/`DeleteByFaceIdAsync` existem
+    justamente para o consumidor implementar sua própria purga LGPD (GS-12) sem reimplementar o
+    `ListFaces`+`DeleteFaces` à mão nem manter uma porta paralela (`IFaceCollectionEraser`) como
+    `native-biometrics-backend` precisou fazer antes desta versão.
   - Base legal e retenção do dado biométrico em si (fora desta lib) são responsabilidade do
     produto que a consome (`native-biometrics-backend`/`native-kyc-backend`) — devem preencher o
     checklist completo na spec deles antes de ir a produção.
+- **[0.3.0 — issue #16] Chave pública do emissor:** `KmsAssertionKeyPublisher` só publica a
+  metade pública da chave (via `kms:GetPublicKey`) — nunca material privado, nunca passa por
+  `kms:Sign`. Suporta apenas chaves EC P-256 (`ECC_NIST_P256`); qualquer outra `KeySpec` é rejeitada
+  com `NotSupportedException` em vez de publicar um JWK inconsistente com o que
+  `JwksAssertionVerifier` sabe validar (ES256 apenas).
 - **FAPI (GS-08):** não se aplica — esta lib não emite nem valida token OAuth/OIDC.
 
 ## 7. Erros — RFC 9457 · dono: `developer`
@@ -186,7 +234,9 @@ trace nem mensagem crua desta lib que deva vazar para uma resposta 5xx sem tradu
 
 xUnit + NSubstitute + Shouldly + Bogus, gate 85% line / 70% branch (`coverlet.runsettings`).
 Cobertura entregue na primeira versão: 77 testes, ~93,7% line / ~83,3% branch. Com a mudança
-0.2.0 (`iss`/`aud`/`Jti` + `IAssertionVerifier`): 108 testes, 92,9% line / 82,05% branch.
+0.2.0 (`iss`/`aud`/`Jti` + `IAssertionVerifier`): 108 testes, 92,9% line / 82,05% branch. Com a
+0.3.0 (S3 no liveness, `DeleteByFaceIdAsync`/`DeleteCollectionAsync`, `IAssertionKeyPublisher`):
+133 testes, 93,4% line / 82,55% branch.
 Destaques (0.1.0):
 - `BiometricDecision` — matriz completa de cenários (verified, retry, rejected por
   `MaxAttempts`, cada `BiometricRejectionReason` isolado/combinado).
@@ -206,6 +256,19 @@ esperada (string única e array), `purpose` divergente, `decision` não `Verifie
 `Rejected`), expirado (com e sem tolerância de `ClockSkew`), `iat` no futuro, mais velho que
 `MaxAssertionAge`, JWS malformado (partes erradas, base64 inválido, `alg`≠ES256, `kid` ausente,
 claim obrigatório ausente), JWKS indisponível/malformado, cache entre chamadas para a mesma URL.
+Destaques (0.3.0): `RekognitionLivenessSessionService` — mapeamento de `S3Object` para
+`ReferenceImageS3`/`AuditImagesS3` (com e sem audit images, ambos os canais nunca simultaneamente
+populados). `RekognitionFaceIndex` — `DeleteByFaceIdAsync` chama `DeleteFaces` sem `ListFaces`
+(assertado via `DidNotReceive`), `DeleteCollectionAsync` idempotente contra
+`ResourceNotFoundException`. `KmsAssertionKeyPublisher` — `IAmazonKeyManagementService` mockado
+retornando um `SubjectPublicKeyInfo` real (chave ECDsa P-256 em memória, exportada como a KMS
+devolveria); chave única e múltiplas (rotação); cache dentro/fora do TTL com `TimeProvider`
+mockado (`Substitute.For<TimeProvider>()`); `KeySpec` não suportado rejeitado com
+`NotSupportedException`; `KeyIds` vazio/com entrada vazia rejeitado na construção. Teste de
+round-trip dedicado: o mesmo `JwksDocumentDto` que o publisher produz é servido por um
+`HttpMessageHandler` fake para o `JwksAssertionVerifier`, que verifica com sucesso uma asserção
+assinada pela chave privada correspondente — prova que emissor e verificador desta lib concordam
+no formato de fio sem precisar de um segundo contrato.
 Smoke pós-deploy (GS-07) não se aplica a esta lib isoladamente — corre no serviço consumidor
 contra hml/prd quando `native-biometrics-backend`/`native-kyc-backend` existirem.
 
@@ -216,6 +279,9 @@ Biblioteca, não serviço deployado — "rollout" é publicação SemVer:
   `.github/workflows/dotnet.yml`, `secrets.NUGET_API_KEY`).
 - `0.2.0`: mesmo fluxo, tag `v0.2.0`, após o PR `feat/assertion-iss-aud-verifier` mergear em
   `develop` e depois `main` (GS-01). Breaking changes documentadas no `CHANGELOG.md` (pré-1.0).
+- `0.3.0`: mesmo fluxo, tag `v0.3.0`, após o PR `feat/0.3.0-liveness-s3-faceindex-jwks` mergear em
+  `develop` e depois `main` (GS-01). Fecha as issues #14/#15/#16, achadas na adoção real da 0.2.0
+  por `native-biometrics-backend` (PR #19).
 - Sem flag de feature — mudança de comportamento (ex.: ajuste de limiar padrão de
   `BiometricPolicy`) é sempre explícita via novo parâmetro nomeado ou novo major.
 - Consumo real (`native-biometrics-backend`/`native-kyc-backend`) valida a integração contra
@@ -245,6 +311,17 @@ Biblioteca, não serviço deployado — "rollout" é publicação SemVer:
 - Se `native-biometrics-backend`/`native-kyc-backend` precisarem de suporte a ES384/ES512 além de
   ES256/RS256, `EcdsaSignatureConverter.DerToJose` já aceita `fieldSizeBytes` parametrizável — só
   falta expor o enum `AssertionSigningAlgorithm` correspondente quando o caso de uso aparecer.
+- ~~Não expõe o lado emissor do JWKS~~ — **resolvido em 0.3.0**: `KmsAssertionKeyPublisher` só
+  suporta EC P-256 hoje (mesma limitação do verifier) — se um consumidor precisar de outra curva,
+  vale a mesma observação do item anterior sobre `EcdsaSignatureConverter`.
+- **`KmsAssertionKeyPublisher` não remove automaticamente uma chave antiga da rotação.**
+  `KeyIds` é uma lista estática de configuração — cabe ao operador tirar um key id da lista quando
+  toda asserção que ele assinou já expirou (a lib não rastreia "quando foi a última vez que essa
+  chave assinou algo", isso exigiria estado que esta lib deliberadamente não guarda).
+- **Nenhum dos quatro consumidores atuais foi migrado para `IAssertionKeyPublisher`.**
+  `native-biometrics-backend` manteve `IAssertionPublicKeyProvider` própria (mesmo padrão do
+  `IFaceCollectionEraser` do item #15) até este PR fechar a issue #16; a migração deles é decisão
+  deles, fora desta spec (mesma postura já registrada para `IAssertionVerifier`/NativeGuard/Passly).
 
 ---
 **Checklist de saída (para `in-review`):** front-matter válido · todas as seções aplicáveis

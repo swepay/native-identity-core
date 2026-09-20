@@ -1,6 +1,7 @@
 using Amazon.KeyManagementService;
 using Amazon.Rekognition;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Native.IdentityCore.Assertions;
 using Native.IdentityCore.FaceIndex;
 using Native.IdentityCore.Liveness;
@@ -50,4 +51,20 @@ public static class ServiceCollectionExtensions
         services
             .AddSingleton(_ => JwksAssertionVerifier.CreateDefaultHttpClient())
             .AddSingleton<IAssertionVerifier, JwksAssertionVerifier>();
+
+    /// <summary>
+    /// Registers <see cref="IAssertionKeyPublisher"/> backed by KMS <c>GetPublicKey</c> — the
+    /// issuer-side counterpart to <see cref="AddNativeIdentityCoreAssertionSigner"/>. Requires
+    /// <see cref="IAmazonKeyManagementService"/> to already be registered; registers
+    /// <see cref="TimeProvider.System"/> only if the caller has not already registered a
+    /// <see cref="TimeProvider"/> of its own (e.g. for testing).
+    /// </summary>
+    public static IServiceCollection AddNativeIdentityCoreAssertionKeyPublisher(this IServiceCollection services, KmsAssertionKeyPublisherOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        services.TryAddSingleton(TimeProvider.System);
+        return services
+            .AddSingleton(options)
+            .AddSingleton<IAssertionKeyPublisher, KmsAssertionKeyPublisher>();
+    }
 }

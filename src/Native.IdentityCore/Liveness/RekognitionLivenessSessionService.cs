@@ -74,8 +74,24 @@ public sealed class RekognitionLivenessSessionService(IAmazonRekognition rekogni
             ? response.AuditImages.Where(a => a.Bytes is not null).Select(a => new ReadOnlyMemory<byte>(a.Bytes!.ToArray())).ToList()
             : [];
 
-        return new LivenessSessionResult(response.SessionId, status, response.Confidence, referenceImage, auditImages);
+        // The response has no session-level "was S3 output configured" flag — Rekognition mirrors
+        // that entirely by populating either `Bytes` or `S3Object` on each image. The reference
+        // image always exists once a session reaches a final status, so its S3-ness is the
+        // reliable signal for whether this whole result is in S3 output mode; audit images may
+        // legitimately be empty either way (e.g. AuditImagesLimit: 0), so they cannot double as
+        // that signal on their own.
+        var referenceImageS3 = ToS3Reference(response.ReferenceImage?.S3Object);
+        IReadOnlyList<S3ImageReference>? auditImagesS3 = referenceImageS3 is null
+            ? null
+            : response.AuditImages is { Count: > 0 }
+                ? response.AuditImages.Where(a => a.S3Object is not null).Select(a => ToS3Reference(a.S3Object)!).ToList()
+                : [];
+
+        return new LivenessSessionResult(response.SessionId, status, response.Confidence, referenceImage, auditImages, referenceImageS3, auditImagesS3);
     }
+
+    private static S3ImageReference? ToS3Reference(S3Object? s3Object) =>
+        s3Object is null ? null : new S3ImageReference(s3Object.Bucket, s3Object.Name, s3Object.Version);
 
     private static LivenessSessionStatus MapStatus(string status) => status switch
     {

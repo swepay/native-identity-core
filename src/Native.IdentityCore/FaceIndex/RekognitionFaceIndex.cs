@@ -114,6 +114,36 @@ public sealed class RekognitionFaceIndex(IAmazonRekognition rekognition, Rekogni
         _logger.LogInformation("Deleted {FaceCount} indexed face(s) for tenant user.", faceIds.Count);
     }
 
+    public async ValueTask DeleteByFaceIdAsync(string tenantId, string faceId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(tenantId);
+        ArgumentException.ThrowIfNullOrEmpty(faceId);
+        var collectionId = _options.BuildCollectionId(tenantId);
+
+        await _rekognition.DeleteFacesAsync(
+            new DeleteFacesRequest { CollectionId = collectionId, FaceIds = [faceId] },
+            cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Deleted indexed face by id for tenant.");
+    }
+
+    public async ValueTask DeleteCollectionAsync(string tenantId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(tenantId);
+        var collectionId = _options.BuildCollectionId(tenantId);
+
+        try
+        {
+            await _rekognition.DeleteCollectionAsync(
+                new DeleteCollectionRequest { CollectionId = collectionId },
+                cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Deleted Rekognition face collection for tenant.");
+        }
+        catch (ResourceNotFoundException)
+        {
+            _logger.LogDebug("Rekognition face collection already absent for tenant.");
+        }
+    }
+
     private async Task<List<string>> CollectFaceIdsAsync(string collectionId, string userRef, CancellationToken cancellationToken)
     {
         var faceIds = new List<string>();

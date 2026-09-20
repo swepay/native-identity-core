@@ -218,4 +218,71 @@ public class RekognitionFaceIndexTests
         // Assert
         Should.Throw<ArgumentNullException>(act);
     }
+
+    [Fact]
+    public async Task DeleteByFaceIdAsync_CallsDeleteFacesDirectlyWithoutListingFaces()
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        var tenantId = IdentityCoreFakers.NewTenantId();
+        var sut = CreateSut(rekognition);
+
+        // Act
+        await sut.DeleteByFaceIdAsync(tenantId, FaceId1);
+
+        // Assert
+        await rekognition.Received(1).DeleteFacesAsync(
+            Arg.Is<DeleteFacesRequest>(r => r.CollectionId == Options.BuildCollectionId(tenantId) && r.FaceIds.Count == 1 && r.FaceIds[0] == FaceId1),
+            Arg.Any<CancellationToken>());
+        await rekognition.DidNotReceive().ListFacesAsync(Arg.Any<ListFacesRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(null, FaceId1)]
+    [InlineData("", FaceId1)]
+    public async Task DeleteByFaceIdAsync_MissingTenantId_ThrowsArgumentException(string? tenantId, string faceId)
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        var sut = CreateSut(rekognition);
+
+        // Act
+        var act = async () => await sut.DeleteByFaceIdAsync(tenantId!, faceId);
+
+        // Assert
+        await Should.ThrowAsync<ArgumentException>(act);
+    }
+
+    [Fact]
+    public async Task DeleteCollectionAsync_CollectionExists_DeletesIt()
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        var tenantId = IdentityCoreFakers.NewTenantId();
+        var sut = CreateSut(rekognition);
+
+        // Act
+        await sut.DeleteCollectionAsync(tenantId);
+
+        // Assert
+        await rekognition.Received(1).DeleteCollectionAsync(
+            Arg.Is<DeleteCollectionRequest>(r => r.CollectionId == Options.BuildCollectionId(tenantId)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task DeleteCollectionAsync_CollectionAlreadyAbsent_DoesNotThrow()
+    {
+        // Arrange
+        var rekognition = Substitute.For<IAmazonRekognition>();
+        rekognition.DeleteCollectionAsync(Arg.Any<DeleteCollectionRequest>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new ResourceNotFoundException("not found"));
+        var sut = CreateSut(rekognition);
+
+        // Act
+        var act = async () => await sut.DeleteCollectionAsync(IdentityCoreFakers.NewTenantId());
+
+        // Assert
+        await Should.NotThrowAsync(act);
+    }
 }

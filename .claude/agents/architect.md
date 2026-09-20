@@ -15,16 +15,21 @@ owner: "@swepay/support-library"
 ## Superfície pública desta lib
 
 - `Native.IdentityCore.Liveness`: `ILivenessSessionService`, `LivenessSessionOptions`,
-  `LivenessSessionHandle`, `LivenessSessionResult`, `LivenessSessionStatus`.
-- `Native.IdentityCore.FaceIndex`: `IFaceIndex`, `FaceCollectionNaming`,
-  `RekognitionFaceIndexOptions`, `FaceIndexResult`, `FaceSearchResult`, `FaceSearchMatch`,
-  `FaceIndexException`.
+  `LivenessSessionHandle`, `LivenessSessionResult`, `LivenessSessionStatus`,
+  `S3ImageReference` (0.3.0 — S3 output mode).
+- `Native.IdentityCore.FaceIndex`: `IFaceIndex` (0.3.0: `DeleteByFaceIdAsync`,
+  `DeleteCollectionAsync`), `FaceCollectionNaming`, `RekognitionFaceIndexOptions`,
+  `FaceIndexResult`, `FaceSearchResult`, `FaceSearchMatch`, `FaceIndexException`.
 - `Native.IdentityCore.Policy`: `BiometricPolicy`, `BiometricDecision`, `BiometricOutcome`,
   `BiometricRejectionReason`, `BiometricDecisionResult`.
 - `Native.IdentityCore.Assertions`: `BiometricAssertion`, `BiometricAssertionPurpose`,
   `IAssertionSigner`, `KmsAssertionSigner`, `KmsAssertionSignerOptions`,
-  `AssertionSigningAlgorithm`, `EcdsaSignatureConverter`.
-- `Native.IdentityCore` (root): `ServiceCollectionExtensions` (`AddNativeIdentityCore*`).
+  `AssertionSigningAlgorithm`, `EcdsaSignatureConverter`, `IAssertionVerifier`,
+  `JwksAssertionVerifier`, `AssertionVerifierOptions`, `JwkDto`, `JwksDocumentDto`,
+  `IAssertionKeyPublisher` (0.3.0), `KmsAssertionKeyPublisher` (0.3.0),
+  `KmsAssertionKeyPublisherOptions` (0.3.0).
+- `Native.IdentityCore` (root): `ServiceCollectionExtensions` (`AddNativeIdentityCore*`, incl.
+  0.3.0's `AddNativeIdentityCoreAssertionKeyPublisher`).
 
 ## Responsabilidades
 

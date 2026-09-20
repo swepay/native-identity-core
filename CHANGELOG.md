@@ -5,6 +5,58 @@ All notable changes to `Native.IdentityCore` are documented in this file. Format
 [SemVer](https://semver.org/) (currently pre-1.0 — any release may include breaking changes,
 called out explicitly below).
 
+## [0.3.0] - 2026-09-19
+
+Three gaps found while adopting 0.2.0 in `native-biometrics-backend` (PR #19) — see issues
+#14/#15/#16.
+
+### Added
+
+- `Native.IdentityCore.Liveness`: `LivenessSessionResult` gains `ReferenceImageS3`/`AuditImagesS3`
+  (`S3ImageReference`: bucket/key/optional version) alongside the existing inline `ReferenceImage`/
+  `AuditImages`. Populated only when the session was created with
+  `LivenessSessionOptions.OutputS3Bucket` configured — the two channels are mutually exclusive per
+  Rekognition's own behavior, not both populated for the same session. **LGPD trade-off**
+  (documented on `LivenessSessionOptions.OutputS3Bucket`): S3 output makes Rekognition durably
+  persist the captured biometric image in the caller's bucket instead of the library handing back
+  bytes in-memory and discarding them — the consuming service MUST configure an S3 Lifecycle
+  expiration rule (or another erasure mechanism) consistent with its own retention/right-to-erasure
+  policy for biometric data (GS-09); this library has no way to enforce or default one. Closes #14.
+- `Native.IdentityCore.FaceIndex`: `IFaceIndex.DeleteByFaceIdAsync(tenantId, faceId)` — a direct
+  `DeleteFaces` call with no `ListFaces` scan, for callers that already persisted
+  `FaceIndexResult.FaceId` at enrollment time. `IFaceIndex.DeleteCollectionAsync(tenantId)` —
+  deletes the tenant's entire face collection (e.g. LGPD/GS-12 tenant purge), idempotent against an
+  already-absent collection. The existing `DeleteAsync(tenantId, userRef)` (list-then-delete by
+  `ExternalImageId`) is unchanged. Closes #15.
+- `Native.IdentityCore.Assertions`: `IAssertionKeyPublisher` + `KmsAssertionKeyPublisher` — the
+  issuer-side counterpart to `JwksAssertionVerifier`. Builds a `JwksDocumentDto` from
+  `kms:GetPublicKey` for one or more configured KMS key ids (`KmsAssertionKeyPublisherOptions.KeyIds`
+  — current signing key first, then any previous key ids kept published during a rotation window),
+  importing each response's DER `SubjectPublicKeyInfo` via `ECDsa.ImportSubjectPublicKeyInfo` (no
+  manual ASN.1 parsing). Each published `JwkDto` has `kid` equal to its KMS key id (the same value
+  `KmsAssertionSigner` stamps as the JWS `kid` header — no extra mapping needed), `kty: "EC"`,
+  `crv: "P-256"`, `alg: "ES256"`, `use: "sig"`. Result is cached in memory (default 15 minutes,
+  configurable via `KmsAssertionKeyPublisherOptions.CacheTtl` — matches `JwksAssertionVerifier`'s
+  own JWKS cache TTL on the verify side). Only EC P-256 (`ECC_NIST_P256`) KMS keys are supported;
+  any other `KeySpec` throws `NotSupportedException`. Registered via
+  `AddNativeIdentityCoreAssertionKeyPublisher(...)`. Closes #16.
+- `JwkDto` gains optional `Alg`/`Use` properties (RFC 7517 §4.4/§4.2) — populated by
+  `KmsAssertionKeyPublisher`, ignored by `JwksAssertionVerifier` (which only reads
+  `kty`/`kid`/`crv`/`x`/`y`), `null` (omitted from JSON) when not supplied.
+
+### Breaking Changes
+
+- `IFaceIndex` gains two new interface members (`DeleteByFaceIdAsync`, `DeleteCollectionAsync`) —
+  source-breaking *only* for a custom `IFaceIndex` implementation outside this library; no such
+  implementation exists across the four current consumers (`native-biometrics-backend`,
+  `native-kyc-backend`, `native-guard-backend`, `native-passkey-backend`), all of which consume
+  `RekognitionFaceIndex` as-is. Every existing call to `DeleteAsync(tenantId, userRef)` keeps
+  compiling and behaving exactly as before.
+- Note on issue #15's literal proposal: a same-named `DeleteAsync(tenantId, faceId)` overload is
+  not possible in C# (both parameters are `string`, so it cannot be distinguished from the existing
+  `DeleteAsync(tenantId, userRef)` overload by signature). `DeleteByFaceIdAsync` delivers the same
+  intent (direct-by-id delete, no `ListFaces` scan) under a distinct name instead.
+
 ## [0.2.0] - 2026-09-19
 
 ### Added

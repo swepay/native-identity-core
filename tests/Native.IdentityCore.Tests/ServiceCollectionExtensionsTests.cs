@@ -94,4 +94,51 @@ public class ServiceCollectionExtensionsTests
         // Assert
         Should.Throw<ArgumentNullException>(act);
     }
+
+    [Fact]
+    public void AddNativeIdentityCoreAssertionKeyPublisher_ResolvesKmsImplementation()
+    {
+        // Arrange
+        var options = new KmsAssertionKeyPublisherOptions(["kms-key"]);
+        var provider = NewServices()
+            .AddSingleton<ILogger<KmsAssertionKeyPublisher>>(NullLogger<KmsAssertionKeyPublisher>.Instance)
+            .AddNativeIdentityCoreAssertionKeyPublisher(options)
+            .BuildServiceProvider();
+
+        // Act
+        var service = provider.GetRequiredService<IAssertionKeyPublisher>();
+
+        // Assert
+        service.ShouldBeOfType<KmsAssertionKeyPublisher>();
+        provider.GetRequiredService<TimeProvider>().ShouldBe(TimeProvider.System);
+    }
+
+    [Fact]
+    public void AddNativeIdentityCoreAssertionKeyPublisher_CallerAlreadyRegisteredTimeProvider_DoesNotOverrideIt()
+    {
+        // Arrange
+        var customTimeProvider = Substitute.For<TimeProvider>();
+        var options = new KmsAssertionKeyPublisherOptions(["kms-key"]);
+        var provider = NewServices()
+            .AddSingleton<ILogger<KmsAssertionKeyPublisher>>(NullLogger<KmsAssertionKeyPublisher>.Instance)
+            .AddSingleton(customTimeProvider)
+            .AddNativeIdentityCoreAssertionKeyPublisher(options)
+            .BuildServiceProvider();
+
+        // Act
+        var resolved = provider.GetRequiredService<TimeProvider>();
+
+        // Assert
+        resolved.ShouldBe(customTimeProvider);
+    }
+
+    [Fact]
+    public void AddNativeIdentityCoreAssertionKeyPublisher_NullOptions_ThrowsArgumentNullException()
+    {
+        // Arrange / Act
+        var act = () => NewServices().AddNativeIdentityCoreAssertionKeyPublisher(null!);
+
+        // Assert
+        Should.Throw<ArgumentNullException>(act);
+    }
 }

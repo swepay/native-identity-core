@@ -21,7 +21,13 @@ Native AOT compatible.
   (`tenant_id`, `user_ref`, `purpose`, `decision`, scores).
 - **`JwksAssertionVerifier`** is the counterpart: verifies a compact JWS against a published JWKS
   (`iss`/`aud`/`purpose`/`decision`/expiry), for a relying party that doesn't want to hand-roll it.
-- This library never persists images, never writes to storage, and never logs a biometric score.
+- **`KmsAssertionKeyPublisher`** is the issuer-side counterpart to the verifier: builds the JWKS
+  document your own `/.well-known/jwks.json` endpoint should serve, straight from the same KMS key
+  `KmsAssertionSigner` signs with.
+- This library never persists images by default; `ILivenessSessionService` optionally lets
+  Rekognition write to S3 instead (see below) when the caller configures it — this library still
+  never touches storage itself either way.
+- Never logs a biometric score.
 
 ## Installation
 
@@ -50,8 +56,13 @@ services.AddNativeIdentityCoreFaceIndex(new RekognitionFaceIndexOptions(Product:
 services.AddNativeIdentityCoreAssertionSigner(new KmsAssertionSignerOptions(
     "alias/identity-assertions", AssertionSigningAlgorithm.Es256, issuer: configuredIssuer));
 
+// The issuer side of a JWKS: publish this signer's key (and, during rotation, the previous
+// one) so a relying party's verifier can fetch it. KeyIds[0] must match the KeyId above.
+services.AddNativeIdentityCoreAssertionKeyPublisher(new KmsAssertionKeyPublisherOptions(
+    KeyIds: ["alias/identity-assertions"]));
+
 // Only needed by a relying party that verifies assertions issued elsewhere (e.g. NativeGuard,
-// Passly, or a third-party IdP) — most producers only need the signer above.
+// Passly, or a third-party IdP) — most producers only need the signer + key publisher above.
 services.AddNativeIdentityCoreAssertionVerifier();
 ```
 
@@ -73,6 +84,33 @@ if (result.Status is LivenessSessionStatus.Succeeded && result.ReferenceImage is
     var search = await faceIndex.SearchAsync(tenantId, referenceImage.Value);
 }
 ```
+
+#### 2b. (Optional) S3 output instead of inline bytes
+
+Pass `OutputS3Bucket`/`OutputS3KeyPrefix` to `LivenessSessionOptions` and Rekognition writes the
+reference/audit images to your bucket instead of returning them inline —
+`LivenessSessionResult.ReferenceImage`/`AuditImages` stay empty, and
+`ReferenceImageS3`/`AuditImagesS3` carry the S3 locations instead:
+
+```csharp
+var session = await liveness.CreateSessionAsync(tenantId, new LivenessSessionOptions(
+    OutputS3Bucket: "tenant-liveness-images", OutputS3KeyPrefix: $"{tenantId}/"));
+
+// ... client completes the capture flow ...
+
+var result = await liveness.GetSessionResultAsync(tenantId, session.SessionId);
+if (result.ReferenceImageS3 is { } referenceImageS3)
+{
+    // referenceImageS3.Bucket / .Key / .Version — fetch the bytes yourself if you need them
+    // (this library never reads from S3 either).
+}
+```
+
+**LGPD trade-off:** inline mode never persists anything — bytes flow through memory and are
+discarded. S3 output makes Rekognition durably write the biometric image to *your* bucket instead;
+you must configure an S3 Lifecycle expiration rule (or another erasure mechanism) consistent with
+your own retention/right-to-erasure policy for biometric data (GS-09) — this library has no way to
+enforce or default one for you.
 
 ### 3. Evaluate the decision and, if verified, issue a signed assertion
 
@@ -119,10 +157,37 @@ if (result.IsValid)
 }
 ```
 
+### 5. (Issuer) Serve your own JWKS endpoint
+
+```csharp
+// e.g. inside a RoutedApiGatewayFunction route for GET /.well-known/jwks.json
+var jwks = await keyPublisher.GetJwksAsync();
+return Results.Json(jwks); // JwksDocumentDto — the exact shape JwksAssertionVerifier expects
+```
+
+During key rotation, list the previous key id after the current one in `KeyIds` — both stay
+published (and therefore verifiable) until every assertion the old key ever signed has expired,
+then drop it from the list.
+
+## Face erasure (LGPD/GS-12)
+
+```csharp
+// Caller already has FaceIndexResult.FaceId from enrollment — no ListFaces scan needed.
+await faceIndex.DeleteByFaceIdAsync(tenantId, faceId);
+
+// Only userRef is known — falls back to a ListFaces scan by ExternalImageId.
+await faceIndex.DeleteAsync(tenantId, userRef);
+
+// Whole-tenant purge (e.g. account closure) — idempotent if the collection is already gone.
+await faceIndex.DeleteCollectionAsync(tenantId);
+```
+
 ## What this library deliberately does NOT do
 
-- **Does not persist images.** Bytes flow through in-memory; nothing is written to disk, S3, or a
-  database by this library.
+- **Does not persist images by default.** Inline mode: bytes flow through in-memory; nothing is
+  written to disk, S3, or a database by this library. S3 output mode (`LivenessSessionOptions.OutputS3Bucket`)
+  is an explicit, opt-in exception — Rekognition (not this library) writes to *your* bucket, and
+  you own its retention (see the LGPD trade-off above).
 - **Does not decide anything by itself beyond `BiometricDecision`.** It hands you scores; you (the
   caller) apply your own `BiometricPolicy` and business rules on top if you need more than the
   default evaluator.
@@ -149,11 +214,18 @@ if (result.IsValid)
   `BiometricAssertion` only carries a meaningful value on the verifier's *output*.
 - Treating `IAssertionVerifier`'s successful result as replay-safe — it isn't. Track consumed
   `Jti` values yourself (e.g. a conditional-write replay guard) the same way NativeGuard/Passly do.
+- Configuring `LivenessSessionOptions.OutputS3Bucket` without an S3 Lifecycle expiration rule (or
+  equivalent) on that bucket — unlike inline mode, S3 output durably persists a biometric image;
+  this library cannot default a retention policy for you.
+- Listing a `KmsAssertionKeyPublisherOptions.KeyIds` entry that is not an EC P-256
+  (`ECC_NIST_P256`) KMS key — `KmsAssertionKeyPublisher` only supports ES256 today and throws
+  `NotSupportedException` rather than silently publishing an unusable JWK.
 
 ## Public API surface
 
 `Native.IdentityCore.Liveness` — `ILivenessSessionService`, `RekognitionLivenessSessionService`,
-`LivenessSessionOptions`, `LivenessSessionHandle`, `LivenessSessionResult`, `LivenessSessionStatus`.
+`LivenessSessionOptions`, `LivenessSessionHandle`, `LivenessSessionResult`, `LivenessSessionStatus`,
+`S3ImageReference`.
 
 `Native.IdentityCore.FaceIndex` — `IFaceIndex`, `RekognitionFaceIndex`, `RekognitionFaceIndexOptions`,
 `FaceCollectionNaming`, `FaceIndexResult`, `FaceSearchResult`, `FaceSearchMatch`, `FaceIndexException`.
@@ -165,13 +237,14 @@ if (result.IsValid)
 `IAssertionSigner`, `KmsAssertionSigner`, `KmsAssertionSignerOptions`, `AssertionSigningAlgorithm`,
 `EcdsaSignatureConverter`, `AssertionPayload`, `IAssertionVerifier`, `JwksAssertionVerifier`,
 `AssertionVerifierOptions`, `AssertionVerificationResult`, `AssertionVerificationError`,
+`IAssertionKeyPublisher`, `KmsAssertionKeyPublisher`, `KmsAssertionKeyPublisherOptions`,
 `JwkDto`, `JwksDocumentDto`.
 
 `Native.IdentityCore.Serialization` — `IdentityCoreJsonSerializerContext`, `AudienceJsonConverter`.
 
 `Native.IdentityCore` — `ServiceCollectionExtensions` (`AddNativeIdentityCoreLiveness`,
 `AddNativeIdentityCoreFaceIndex`, `AddNativeIdentityCoreAssertionSigner`,
-`AddNativeIdentityCoreAssertionVerifier`).
+`AddNativeIdentityCoreAssertionVerifier`, `AddNativeIdentityCoreAssertionKeyPublisher`).
 
 ## Contributing
 

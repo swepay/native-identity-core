@@ -27,6 +27,22 @@ public interface IFaceIndex
     /// <summary>Searches the tenant collection for the best match to <paramref name="imageBytes"/> (verification).</summary>
     ValueTask<FaceSearchResult> SearchAsync(string tenantId, ReadOnlyMemory<byte> imageBytes, CancellationToken cancellationToken = default);
 
-    /// <summary>Removes every indexed face for <paramref name="userRef"/> from the tenant collection (e.g. LGPD erasure request, re-enrollment).</summary>
+    /// <summary>Removes every indexed face for <paramref name="userRef"/> from the tenant collection (e.g. LGPD erasure request, re-enrollment). Scans the collection (<c>ListFaces</c>) to resolve <paramref name="userRef"/> to its face id(s) first — prefer <see cref="DeleteByFaceIdAsync"/> when the caller already persisted <see cref="FaceIndexResult.FaceId"/> at enrollment time.</summary>
     ValueTask DeleteAsync(string tenantId, string userRef, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a single indexed face by its Rekognition-assigned <paramref name="faceId"/> — a
+    /// direct <c>DeleteFaces</c> call, no <c>ListFaces</c> scan. Use this when the caller already
+    /// persisted <see cref="FaceIndexResult.FaceId"/> from <see cref="IndexAsync"/> (the common
+    /// enrollment pattern); fall back to <see cref="DeleteAsync(string,string,CancellationToken)"/>
+    /// when only the <c>userRef</c> is known.
+    /// </summary>
+    ValueTask DeleteByFaceIdAsync(string tenantId, string faceId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes the tenant's entire face collection (e.g. LGPD erasure of a whole tenant — GS-12
+    /// purge). Idempotent: a collection that does not exist (already deleted, or never created)
+    /// is not an error.
+    /// </summary>
+    ValueTask DeleteCollectionAsync(string tenantId, CancellationToken cancellationToken = default);
 }

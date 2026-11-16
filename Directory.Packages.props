@@ -29,7 +29,7 @@
   <ItemGroup>
     <!-- 8.0.0 pulls Microsoft.Build.Tasks.Git 8.0.0 (GHSA-23fw-v26w-5fgq, moderate) — pinned to
          the newer stable line instead of the ecosystem-common 8.0.0 used by older sibling libs. -->
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.401" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="11.0.100" />
   </ItemGroup>
 
   <!-- === Test stack (GS-07 — swepay-testing-quality, versões sempre fixas) === -->
